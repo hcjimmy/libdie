@@ -19,9 +19,10 @@
 #include "string_ops.h"
 
 // Recursively does the parsing.
-bool exp_to_op_rec(struct Operation *operation, char **dice_exp,
-		bool set_prefix, short last_op_precedence,
-		short parent_last_op_precedence, char *parent_operand,
+bool exp_to_op_rec(struct Operation * const operation, char **dice_exp,
+		const bool set_prefix, short last_op_precedence,
+		const short parent_last_op_precedence, char *parent_next_operator,
+		char *parenthesis_start, char expected_parenthesis,
 		struct Dierror_list *error_list);
 // Parse section (number, dice, or parenthesis operation).
 bool parse_num_section(struct NumSection *out, char **dice_exp,
@@ -44,10 +45,12 @@ struct Operation* make_operation_with_start(bool parenthesis,
 #define PNS__MEM_FAIL true
 #define PNS__NO_MEM_FAIL false
 
-// '(' is treated like an operand, but is replaced by '*', (printing parenthesis is done with the flag in Operation).
-#define NON_PARETHESIS_LEGAL_OPERANDS 	"+-/*%^"
-#define LEGAL_OPERANDS 		NON_PARETHESIS_LEGAL_OPERANDS "("	// All legal operands
-#define LEGAL_MODS 		LEGAL_OPERANDS ")"	// All legal characters that are not a number/dice (not [d0-9.]).
+// Legalparenthesis are treated like an operand, but are replaced by '*', (printing parenthesis is done with the flag in Operation).
+#define LEGAL_OPERANDS 			"+-/*%^"			// All legal operands
+#define LEGAL_PARENTHESIS_OPENING	"([{"				// (Update code below if adding parenthesis)
+#define LEGAL_PARENTHESIS_CLOSING	")]}"				// (especially parse_num_section).
+#define LEGAL_PARENTHESIS	 	LEGAL_PARENTHESIS_OPENING LEGAL_PARENTHESIS_CLOSING	// All legal parenthesis
+#define LEGAL_MODS LEGAL_OPERANDS LEGAL_PARENTHESIS	// All legal characters that are not a number/dice (not [d0-9.]).
 
 #define BELOW_MINIMAL_PRECEDENCE -1
 #define PLUS_MINUS_PERCEDENCE 0
@@ -159,14 +162,16 @@ struct Operation* make_operation_with_start(bool parenthesis, char prefix,
  * 	*dice_exp points to where the section is expected to start.
  * 	*dice_exp (the pointer) is modifiable (not neccesarily it's content).
  * 	error_list is initialized.
+ *
  * post:
  *	If a memory allocation error occures:
  *		true is returned, *out and dice_exp are undefined.
  *
  *	Otherwise:
  *		*out is set to a value representing the section.
- *		If initially **dice_exp == '(', *dice_exp is set to the first ')' if it exists, or '\0' if it doesn't.
- *			If there's no closing ')', an error is added.
+ *		If initially **dice_exp is an opening parenthesis, *dice_exp is set to the matching closing parenthesis if it exists,
+ *			or '\0' if it doesn't.
+ *			If there's no closing parenthesis, an error is added.
  *		Otherwise *dice_exp is set at the first mod found or '\0'.
  *
  *		On error (other than memory failure) it is added to the list and *out is:
@@ -185,24 +190,31 @@ bool parse_num_section(struct NumSection *out_section, char **dice_exp,
 
 	// If starting with parenthesis, recursively call exp_to_op_rec to proccess it,
 	// then check for memory parenthesis errors.
-	if(**dice_exp == '(') {
+	if(equals_any(**dice_exp, LEGAL_PARENTHESIS_OPENING)) {
+
+		char closing_parenthesis;
+		if(**dice_exp == '(')
+			closing_parenthesis = ')';
+		else
+			closing_parenthesis = **dice_exp+2;	// See ascii table...
+
 		out_section->type = type_op;
 		if(!(out_section->data.operation = make_operation(true)))
 			return PNS__MEM_FAIL;
 
+
 		// Keep parenthesis, then proccess after it.
 		ch_pointer = (*dice_exp)++;
 		memory_failed = exp_to_op_rec(out_section->data.operation, dice_exp, true, HIGHEST_PRECEDENCE,
-				BELOW_MINIMAL_PRECEDENCE, NULL, error_list);
+				BELOW_MINIMAL_PRECEDENCE, NULL, *dice_exp, closing_parenthesis, error_list);
 
-		// Check errors.
-		if(memory_failed || (**dice_exp != ')' && add_dierror(error_list, unclosed_parenthesis, ch_pointer, *dice_exp))) {
+		if(memory_failed) {
 			clear_operation_pointer(out_section->data.operation);
 			return PNS__MEM_FAIL;
 		}
 
 		// Move *dice_exp after ')'.
-		if(**dice_exp == ')')
+		if(**dice_exp == closing_parenthesis)
 			(*dice_exp)++;
 		else
 			lassert(**dice_exp == '\0', ASSERT_LVL_FAST);
@@ -278,49 +290,118 @@ bool parse_num_section(struct NumSection *out_section, char **dice_exp,
 	return PNS__NO_MEM_FAIL;
 }
 
-/* Parse section of operand/s (multiple operands is illegal unless parenthesis) after
- * running parse_num_section.
+/* Parse section of operand/s (multiple operands are illegal unless minuses)
+ * after running parse_num_section.
+ *
+ * If no operator is found, *out_operator is set to '*' because of the expectation
+ * that we're dealing with parenthesis (either before or after).
+ *
+ * If multiple operators are found, unless they're all minus, they're reported.
+ *
+ * To clarify, there are three legal states (in which no error is reported):
+ * 	No operators (replaced with '*').
+ * 	Single operator.
+ * 	Multiple minus operators.
+ *
+ * Simplest way to use this function is to meet it's requirements.
  *
  * pre:
  *	**dice_exp != '\0'
- *	**dice_exp != ')'
+ *	**dice_exp is not in LEGAL_PARENTHESIS_CLOSING.
  * 	out_operand != NULL
- * 	after_parenthesis_section is indicates whether or not the last NumSection parsed (not one before
- * 	the previous operator) was parenthesis.
- * 	Function is called after succeful call of parse_num_section (for guarantees relating to dice_exp).
+ * 	Function is called after successful call of parse_num_section (for guarantees relating to dice_exp).
+ * 	after_parenthesis_section is indicates whether or not the last NumSection parsed
+ * 		(the one before this operator) was parenthesis.
  *
  * post:
  * 	If memory alloction failed: true is returned.
  * 	Otherwise:
- * 	*dice_exp is after the operators or parenthesis, if it's the first operator.
- *	*out_operand is set to the first legal operand.
+ * 	*dice_exp is after the operators.
+ *	*out_operand is set to the first legal operator.
  * 	Unless parenthesis, multiple operators are errenous, and are added to the error list.
  * 	*/
 bool parse_operators(char *const out_operator, char **dice_exp, bool after_parenthesis_section,
 		struct Dierror_list *error_list)
 {
-	const char *operator_section_start;
+	char *operator_section_start;
+	char *operator_section_ptr;
 
-	// Unless the last section was parenthesis, parse_num_section should guarantee stopping on the first operand
-	// or ')' or '\0', we've already ruled out ')' and '\0'.
-	if(!equals_any(**dice_exp, LEGAL_OPERANDS)) {
-		lassert(after_parenthesis_section, ASSERT_LVL_FAST);
-		*out_operator = '*';	// See note at top of the file about parenthesis operator.
+	// Legal cases:					E.g.
+	// single operator, <section-end>		"+<section-end>"
+	// Multiple minus, <section-end>		"----<section-end>"
+	// <section-end>				"<section-end>"
+	//
+	// <section-end> is the part after the operator section, and is not a concern here (even if it's '\0').
+	// Multiple operators are not allowed.
+	//
+	// <section-end> alone is legal here, since illegal cases would be handled parse_num_section
+	// (missing_num error).
 
-	// Unless the operator is parenthesis skip it/them, otherwise let parse_num_section handle the parenthesis.
-	} else if((*out_operator = **dice_exp) != '(') {
-		operator_section_start = *dice_exp;
-		*dice_exp = get_next_non_pchars((*dice_exp)+1, NON_PARETHESIS_LEGAL_OPERANDS);
+	// Skip the operands and keep the start.
+	operator_section_start = *dice_exp;
+	*dice_exp = get_next_non_pchars(*dice_exp, LEGAL_OPERANDS);
 
-		// Raise error if multiple operators found (assuming they're not not parenthesis, eg. "3+(..." is legal).
-		if(operator_section_start+1 != *dice_exp &&
-				add_dierror(error_list, multiple_operators, operator_section_start, *dice_exp)) {
-			return true;
+	if(*dice_exp == operator_section_start) {	// Zero operators
+		// It must be parenthesis start or be after a parenthesis section to be legal.
+		lassert(after_parenthesis_section || equals_any(**dice_exp, LEGAL_PARENTHESIS),
+				ASSERT_LVL_PRETTY_FAST);
+		*out_operator = '*';	// (Replace parenthesis with '*').
+	} else if(*dice_exp != operator_section_start + 1) {	// Multiple operators.
+
+		// Check if only '-'.
+		operator_section_ptr = get_next_non_pchars(operator_section_start, "-");
+		if(operator_section_ptr != *dice_exp) {
+			// Error, not all are '-'.
+			*out_operator = *operator_section_start;
+			return add_dierror(error_list, invalid_operator, operator_section_start, *dice_exp);
 		}
-	} else 
-		*out_operator = '*';	// Switch '(' with '*'.
+
+		*out_operator = '+' + (((operator_section_ptr - operator_section_start) % 2) * 2);
+		// Equivalent to:
+		// 	*out_operator = ((operator_section_ptr - operator_section_start) % 2) == 0 ? '+' : '-';
+		// only avoid branch prediction. (See ascii table).
+
+	} else {	// Single operator.
+		*out_operator = *operator_section_start;
+	}
 
 	return false;
+
+}
+
+bool parse_prefix(char *const out_prefix, char **dice_exp, Dierror_list *error_list)
+{
+	char* prefix_start;
+	prefix_start = *dice_exp;	// Keep the start.
+
+	if(**dice_exp == '-') {
+		do {
+			++*dice_exp;
+		} while(**dice_exp == '-');
+
+		if(equals_any(**dice_exp, LEGAL_OPERANDS)) {	// Operand found after minus(es).
+			*out_prefix = '+';
+			*dice_exp = get_next_non_pchars(++*dice_exp, LEGAL_OPERANDS);
+			return add_dierror(error_list, invalid_operator, prefix_start, *dice_exp);
+		}
+
+		*out_prefix = '+' + (((*dice_exp - prefix_start) % 2) * 2);
+		// Set to '+' or '-' depending on the number of occurences of '-',
+		// only avoid branch prediction. (See ascii table).
+		// Equivalent to:
+		//	*out_prefix = ((*dice_exp - prefix_start) % 2 == 0) ? '+' : '-';
+		return false;
+	}
+
+	*dice_exp = get_next_non_pchars(*dice_exp, LEGAL_OPERANDS);
+	*out_prefix = '+';	// We know it's not '-', so that's the only other legal option.
+
+	if(*dice_exp > prefix_start+1 ||
+			(*dice_exp == prefix_start+1 && *prefix_start != '+'))
+		return add_dierror(error_list, invalid_operator, prefix_start, *dice_exp);
+
+	return false;
+
 }
 
 
@@ -341,6 +422,7 @@ bool parse_operators(char *const out_operator, char **dice_exp, bool after_paren
 bool exp_to_op_rec(struct Operation * const operation, char **dice_exp,
 		const bool set_prefix, short last_op_precedence,
 		const short parent_last_op_precedence, char *parent_next_operator,
+		char *parenthesis_start, char expected_parenthesis,
 		struct Dierror_list *error_list)
 {
 
@@ -351,17 +433,35 @@ bool exp_to_op_rec(struct Operation * const operation, char **dice_exp,
 
 	// If we're supposed to set the prefix, check if + or -, set it and move *dice_exp.
 	if(set_prefix) {
-		if(**dice_exp == '-')	// We only need to update the precedence if it's minus since
-			last_op_precedence = PLUS_MINUS_PERCEDENCE;	// it doesn't matter otherwise.
+		if(parse_prefix(&operation->prefix, dice_exp, error_list))
+			return ETOP__MEM_FAIL;
 
-		operation->prefix = (**dice_exp == '-' || **dice_exp == '+') ? *((*dice_exp)++) : '\0';
+		if(operation->prefix == '-')	// We only need to update the precedence if it's minus since
+			last_op_precedence = PLUS_MINUS_PERCEDENCE;	// it doesn't matter otherwise.
 	}
 
 	if(parse_num_section(&section, dice_exp, error_list) == PNS__MEM_FAIL)
 		return ETOP__MEM_FAIL;
 
 	// Continue while haven't reached the end of the section we're responsible for.
-	while(**dice_exp != '\0' && **dice_exp != ')') {
+	while(**dice_exp != expected_parenthesis) {
+
+		if(**dice_exp == '\0') {
+			if(add_dierror(error_list, unclosed_parenthesis, parenthesis_start, *dice_exp)) {
+				clear_num_section(section);
+				return ETOP__MEM_FAIL;
+			}
+			break;
+		}
+
+		if(equals_any(**dice_exp, LEGAL_PARENTHESIS_CLOSING)) {
+			if(add_dierror(error_list, invalid_parenthesis, *dice_exp, *dice_exp+1)) {
+				clear_num_section(section);
+				return ETOP__MEM_FAIL;
+			}
+			++*dice_exp;
+			continue;
+		}
 
 		if(parse_operators(&operator, dice_exp,
 				(section.type == type_op && ((struct Operation*)section.data.operation)->parenthesis),
@@ -376,13 +476,15 @@ bool exp_to_op_rec(struct Operation * const operation, char **dice_exp,
 		if(op_precendence  > last_op_precedence) {
 
 			// The last parsed section and operators are passed to the sub-section.
-			sub_operation = make_operation_with_start(false, '\0', section, operator);
+			sub_operation = make_operation_with_start(false, '+', section, operator);
 			if(!sub_operation) {
 				clear_num_section(section);
 				return ETOP__MEM_FAIL;
 			}
 			if(exp_to_op_rec(sub_operation, dice_exp, false, op_precendence,
-					last_op_precedence, &operator, error_list) == ETOP__MEM_FAIL) {
+					last_op_precedence, &operator,
+					parenthesis_start, expected_parenthesis,
+					error_list) == ETOP__MEM_FAIL) {
 				clear_operation_pointer(sub_operation);
 				return ETOP__MEM_FAIL;
 			}
@@ -461,7 +563,7 @@ struct Operation* exp_to_op(char *dice_exp, struct Dierror **errors)
 		goto memory_failed__close_error_list;
 	if(exp_to_op_rec(ret, &dice_exp, true,
 				HIGHEST_PRECEDENCE, BELOW_MINIMAL_PRECEDENCE,
-				NULL, &error_list) == ETOP__MEM_FAIL
+				NULL, NULL, '\0', &error_list) == ETOP__MEM_FAIL
 			||	// Check for invalid parenthesis...
 			((*dice_exp == ')' && add_dierror(&error_list, invalid_parenthesis, dice_exp, dice_exp+1)))) {
 		clear_operation_pointer(ret);

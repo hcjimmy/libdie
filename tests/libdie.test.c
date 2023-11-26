@@ -91,7 +91,7 @@ char* dierror_type_as_str(enum dierror_type type)
 	switch(type) {
 	case(invalid_num):
 		return "invalid number";
-	case(multiple_operators):
+	case(invalid_operator):
 		return "multiple operators";
 	case(invalid_reps):
 		return "invalid repetitions";
@@ -470,23 +470,27 @@ int parse_num_section_tester()
 	fails += test_parse_num_section(dice_exp, create_dice_section(11, 1), dice_exp+8, 1, invalid_sides);
 
 	// Operation
-	
+
 	dice_exp = "(14*3d4-5)";
 	expected_section = create_op_section(
-			create_operation(true, '\0', 3,
+			create_operation(true, '+', 3,
 				create_num_numsection(14.0), '*',
 				create_dice_section(3, 4), '-',
 				create_num_numsection(5.0)
 				));
 	fails += test_parse_num_section(dice_exp, expected_section, dice_exp+10, 0);
+
+	dice_exp = "[14*3d4-5]";
+	fails += test_parse_num_section(dice_exp, expected_section, dice_exp+10, 0);
+
 	clear_num_section(expected_section);
 
 	dice_exp = "(d20+3^5)";
 	expected_section = create_op_section(
-			create_operation(true, '\0', 2,
+			create_operation(true, '+', 2,
 				create_dice_section(1, 20), '+',
 				create_op_section(
-					create_operation(false, '\0',2,
+					create_operation(false, '+',2,
 						create_num_numsection(3.0), '^', create_num_numsection(5.0))
 					)
 				)
@@ -601,39 +605,54 @@ int exp_to_op_tester()
 	struct Operation *operation;
 
 	dice_exp = "2d7+5/d6+4(d10)";
-	operation = create_operation(false, '\0',  3,
+	operation = create_operation(false, '+',  3,
 		create_dice_section(2,7),
 		'+',
-		create_op_section(create_operation(false, '\0', 2,
+		create_op_section(create_operation(false, '+', 2,
 			create_num_numsection(5.0),
 			'/',
 			create_dice_section(1,6))
 		), 
 		'+',
-		create_op_section(create_operation(false, '\0', 2,
+		create_op_section(create_operation(false, '+', 2,
 					create_num_numsection(4.0),
 					'*',
-					create_op_section(create_operation(true, '\0', 1,
+					create_op_section(create_operation(true, '+', 1,
 							create_dice_section(1, 10)
 							))
 				))
 			);
 	fails = test_exp_to_op(dice_exp, operation, 0);
+
+	dice_exp = "2d7+5/d6+4[d10]";
+	fails += test_exp_to_op(dice_exp, operation, 0);
+
+	dice_exp = "2d7+5/d6+4{d10}";
+	fails += test_exp_to_op(dice_exp, operation, 0);
+
+	dice_exp = "2d7--5/d6+4(d10)";
+	fails += test_exp_to_op(dice_exp, operation, 0);
+
 	clear_operation_pointer(operation);
 
+
 	dice_exp = "33.5*4d12+0";
-	operation = create_operation(false, '\0', 3,
+	operation = create_operation(false, '+', 3,
 			create_num_numsection(33.5),
 			'*', create_dice_section(4, 12),
 			'+', create_num_numsection(0.0));
 	fails += test_exp_to_op(dice_exp, operation, 0);
+
+	dice_exp = "--33.5*4d12+0";
+	fails += test_exp_to_op(dice_exp, operation, 0);
+
 	clear_operation_pointer(operation);
 
 	dice_exp = "666.666(d12/2.5)^4";
-	operation = create_operation(false, '\0', 2,
+	operation = create_operation(false, '+', 2,
 			create_num_numsection(666.666),
-			'*', create_op_section(create_operation(false, '\0', 2,
-					create_op_section(create_operation(true, '\0', 2,
+			'*', create_op_section(create_operation(false, '+', 2,
+					create_op_section(create_operation(true, '+', 2,
 							create_dice_section(1, 12),
 							'/', create_num_numsection(2.5))
 						),
@@ -641,11 +660,35 @@ int exp_to_op_tester()
 				)
 			);
 	fails += test_exp_to_op(dice_exp, operation, 0);
+	dice_exp = "666.666[d12/2.5]^4";
+	fails += test_exp_to_op(dice_exp, operation, 0);
+	clear_operation_pointer(operation);
+
+	dice_exp = "3-4d5";
+	operation = create_operation(false, '+', 2,
+			create_num_numsection(3.0),
+			'-', create_dice_section(4, 5));
+	fails += test_exp_to_op(dice_exp, operation, 0);
+
+	dice_exp = "3---4d5";
+	fails += test_exp_to_op(dice_exp, operation, 0);
+
 	clear_operation_pointer(operation);
 
 	dice_exp = "5+6ha+d3";
 	fails += test_exp_to_op(dice_exp, NULL, 1, invalid_num);
 
+	dice_exp = "5+/2";
+	fails += test_exp_to_op(dice_exp, NULL, 1, invalid_operator);
+	
+	dice_exp = "+-4";
+	fails += test_exp_to_op(dice_exp, NULL, 1, invalid_operator);
+
+	fails += test_exp_to_op("2+)", NULL, 2, missing_num, invalid_parenthesis);
+	fails += test_exp_to_op("2+", NULL, 1, missing_num);
+	fails += test_exp_to_op("(2+3", NULL, 1, unclosed_parenthesis);
+	fails += test_exp_to_op("()", NULL, 1, missing_num);
+	fails += test_exp_to_op("", NULL, 1, empty_expression);
 
 	return fails;
 }
@@ -700,7 +743,7 @@ int get_calc_string_length_tester()
 	struct Operation *operation;
 	int fails;
 
-	operation = create_operation(false, '\0', 3,
+	operation = create_operation(false, '+', 3,
 			create_num_numsection(33.5),
 			'*',
 			create_dice_section(4, 12),
@@ -715,13 +758,13 @@ int get_calc_string_length_tester()
 			+ 1);	// '\0'
 	clear_operation_pointer(operation);
 
-	operation = create_operation(false, '\0', 1, create_dice_section(3, 15));
+	operation = create_operation(false, '+', 1, create_dice_section(3, 15));
 	fails += test_get_calc_string_length(operation, "3d15",
 			3*2+2
 			+1);
 	clear_operation_pointer(operation);
 
-	operation = create_operation(false, '\0', 2,
+	operation = create_operation(false, '+', 2,
 			create_num_numsection(22.11),
 			 '+',
 			create_num_numsection(122.0));
@@ -733,7 +776,7 @@ int get_calc_string_length_tester()
 	clear_operation_pointer(operation);
 
 	
-	operation = create_operation(false, '\0', 3,
+	operation = create_operation(false, '+', 3,
 			create_num_numsection(22.11),
 			'+', create_num_numsection(122.0),
 			'+', create_dice_section(3,5));
@@ -749,7 +792,7 @@ int get_calc_string_length_tester()
 	// 2d8+4*666-1d13
 	operation = create_operation(false, '-', 3, 
 			create_dice_section(2, 8),
-			'+', create_op_section(create_operation(false, '\0', 2, 
+			'+', create_op_section(create_operation(false, '+', 2, 
 					create_num_numsection(4.0),
 					'*', create_num_numsection(666.0))),
 			'-', create_dice_section(1, 13));
@@ -868,7 +911,7 @@ int operate_tester()
 	int rolls[40];
 
 	// 33.5*4d12+0
-	operation = create_operation(false, '\0', 3,
+	operation = create_operation(false, '+', 3,
 			create_num_numsection(33.5),
 			'*', create_dice_section(4, 12),
 			'+', create_num_numsection(0.0));
@@ -885,17 +928,17 @@ int operate_tester()
 	clear_operation_pointer(operation);
 
 	// "2d7+5/d6+4(d10)"
-	operation = create_operation(false, '\0',  3,
+	operation = create_operation(false, '+',  3,
 		create_dice_section(2,7),
-		'+', create_op_section(create_operation(false, '\0', 2,
+		'+', create_op_section(create_operation(false, '+', 2,
 					create_num_numsection(5.0),
 					'/',
 					create_dice_section(1,6))
 		), 
-		'+', create_op_section(create_operation(false, '\0', 2,
+		'+', create_op_section(create_operation(false, '+', 2,
 					create_num_numsection(4.0),
 					'*',
-					create_op_section(create_operation(true, '\0', 1,
+					create_op_section(create_operation(true, '+', 1,
 							create_dice_section(1, 10)
 							))
 				))

@@ -26,13 +26,13 @@ bool equals_any(const char ch, const char *chars);
  * Currently implemented as a macro. */
 char* get_next_in_chars(char* str, const char* chars);
 // Implementation:
-#define get_next_in_chars(str, chars) (str + strcspn(str, chars))
+#define get_next_in_chars(str, chars) ((str) + strcspn((str), (chars)))
 
 /* Return pointer to the next char in str that is not in chars.
  * Currently implemented as a macro. */
 char* get_next_non_pchars(char* str, const char* chars);
 // Implementation:
-#define get_next_non_pchars(str, chars) (str + strspn(str, chars))
+#define get_next_non_pchars(str, chars) ((str) + strspn((str), (chars)))
 
 /* Wrapper of strtod that does not accept initial '+', '-' or spaces. */
 double strtod_noprefix(char *nptr, char **endptr);

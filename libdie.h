@@ -31,7 +31,7 @@
 /* Contain the type of error and any data associated with it. */
 typedef struct Dierror {
 	enum dierror_type {
-		multiple_operators,
+		invalid_operator,
 
 		invalid_num,
 		missing_num,

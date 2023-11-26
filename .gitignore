@@ -3,3 +3,4 @@
 !.gitmodules
 *.o
 example/example
+build

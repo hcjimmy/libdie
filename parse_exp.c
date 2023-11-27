@@ -563,14 +563,12 @@ struct Operation* exp_to_op(char *dice_exp, struct Dierror **errors)
 		goto memory_failed__close_error_list;
 	if(exp_to_op_rec(ret, &dice_exp, true,
 				HIGHEST_PRECEDENCE, BELOW_MINIMAL_PRECEDENCE,
-				NULL, NULL, '\0', &error_list) == ETOP__MEM_FAIL
-			||	// Check for invalid parenthesis...
-			((*dice_exp == ')' && add_dierror(&error_list, invalid_parenthesis, dice_exp, dice_exp+1)))) {
+				NULL, NULL, '\0', &error_list) == ETOP__MEM_FAIL) {
 		clear_operation_pointer(ret);
 		goto memory_failed__close_error_list;
 	}
 
-	lassert(*dice_exp == '\0' || *dice_exp == ')', ASSERT_LVL_FAST);
+	lassert(*dice_exp == '\0', ASSERT_LVL_FAST);
 
 	// If erred, free op and return the errors.
 	if(Dierror_list_length(&error_list) != 0) {
